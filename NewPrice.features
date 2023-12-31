@@ -1,0 +1,30 @@
+@new price
+Feature: Update Market price
+
+Scenario : Market Price being affected by matched order
+Given I have started current price is 90
+And new 2 orders matched with price 92
+Then my current price will be 92
+
+Certainly! The highest_price field plays a crucial role in the logic of a trailing stop sell system. It serves to track the highest market price reached since the order was placed. This information is essential for dynamically adjusting the stop loss level, which is a key feature of trailing stop strategies. Here's why it's important:
+
+Purpose of highest_price:
+Stop Loss Adjustment: In a trailing stop sell system, the stop loss level is not fixed. Instead, it moves up with the market price, but it does not move down. The highest_price is used to determine how the stop loss should be adjusted. When the market price reaches a new high, the highest_price is updated, and the stop loss is recalculated based on this new value.
+
+Locking in Profits: The main goal of a trailing stop sell order is to lock in profits while allowing the position to continue to gain value. By adjusting the stop loss level as the market price increases, the highest_price helps ensure that some profits are protected if the market price suddenly falls.
+
+How It Works:
+When a new market price comes in, it is compared with the highest_price.
+If the new price is higher than the highest_price, the highest_price is updated to this new price. Consequently, the stoploss is recalculated as highest_price - stopsize.
+If the new price is lower than the highest_price, highest_price remains unchanged. The stoploss does not decrease; it either stays the same or increases. This prevents the stop loss from moving down, which is a key feature of trailing stops.
+In Your Implementation:
+When the Kafka consumer receives a new price:
+
+It checks if this new price is higher than the highest_price of each order.
+If so, it updates the highest_price and recalculates the stoploss.
+If the new price is lower or equal to the stoploss, it may trigger the selling of the order (depending on your specific sell logic).
+This approach allows each order to have its own trailing stop logic, adjusting the stop loss level based on the highest market price experienced since the order was created. It's an effective strategy to protect gains in a fluctuating market.
+
+
+
+

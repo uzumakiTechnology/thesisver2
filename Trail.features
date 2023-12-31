@@ -1,0 +1,60 @@
+@ Trailing Stop Sell Problem
+
+Scenario : Stop Loss value scaled when Market price rise
+Given I have an order with stop loss value (initial price) at 90 
+And Market Price is 100
+When  Market price rise up to 110
+Then  My stop loss value will be updated to 100
+
+Scenario: Stop loss value do not scale when market price goes down but not enough to trigger sell order
+Given I have an order with stop loss value (initial price) at 90 
+And Market Price is 100
+When  Market price decrease to 95
+Then my stop loss value will not change
+
+Scenario: Stop loss value do not scale when market price goes down but enough to trigger sell order
+Given I have an order with stop loss value (initial price) at 90 
+And Market Price is 100
+When  Market price decrease to 90
+Then my order will be sell
+
+
+
+
+Redis Server: Running and accessible.
+Kafka Broker: Running and the new_price topic is created.
+Kafka Producer: Generating and sending price data to the new_price topic.
+Kafka Consumer: Listening for new prices and updating orders.
+FastAPI Server: Running and able to accept requests for order creation.
+
+
+
+
+
+
+  // useEffect(() => {
+  //   const fetchOrderData = async () => {
+  //     const response = await fetch(`http://127.0.0.1:8000/orders/${uuid}`);
+  //     if (!response.ok) {
+  //       throw new Error("Network response was not ok");
+  //     }
+  //     const newData = await response.json();
+  //     setOrderData((currentData) => [...currentData, newData]);
+  //   };
+
+  //   fetchOrderData().catch(console.error);
+  // }, [uuid]);
+
+
+
+
+
+
+
+
+  // {
+//     "market_price": 80,
+//     "quantity": 100,
+//     "stoploss": 10,
+//    "timestamp": "2023-12-19T11:59:20.992Z" 
+//    }

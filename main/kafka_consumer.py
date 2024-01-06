@@ -30,17 +30,6 @@ async def disconnect(sid):
 orders = {}
 
 
-def instantiate_order_from_data(order_data):
-    order = Order(
-        market_price=order_data['market_price'],
-        quantity=order_data['quantity'],
-        stopsize=order_data['stopsize'],
-        timestamp=order_data.get('timestamp')
-    )
-    order.uuid = order_data['uuid']
-    order.is_matched = order_data.get('is_matched', False) == 'True'  
-    return order
-
 def parse_datetime_with_fallback(datetime_str):
     # Correcting malformed timestamp
     parts = datetime_str.split('T')
@@ -62,30 +51,6 @@ def parse_datetime_with_fallback(datetime_str):
         except ValueError:
             print(f"Incorrect timestamp format: {datetime_str}")
             return None
-
-
-
-async def process_new_price(new_price):
-    all_order_uuids = r.keys("order:*")
-    for order_uuid_bytes in all_order_uuids:
-        order_uuid = order_uuid_bytes.decode('utf-8').split(":")[1]
-
-        order_data = r.hgetall(f"order:{order_uuid}")
-        order_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data.items()}
-
-        if order_uuid in orders:
-            order = orders[order_uuid]
-        else:
-            order = instantiate_order_from_data(order_data)
-            orders[order_uuid] = order
-
-        await order.update_order(new_price, sio)
-
-        if order.is_matched:
-            last_state_data = r.hgetall(f"order_last_state:{order_uuid}")
-            if last_state_data:
-                last_state_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in last_state_data.items()}
-
 
 consumer = KafkaConsumer(
     "new_price", 
@@ -119,23 +84,39 @@ async def update_order_with_new_price(order_uuid, new_price):
             k.decode('utf-8'): float(v.decode('utf-8')) if k.decode('utf-8') in ['market_price', 'highest_price', 'stopsize', 'stoploss'] else v.decode('utf-8')
             for k, v in order_data.items()
         }
+
+        # order = instantiate_order_from_data(order_data)
+
         highest_price = order_data.get('highest_price')
         stopsize = order_data.get('stopsize')
         stoploss = order_data.get('stoploss')
         is_matched = order_data.get('is_matched') == 'True'
         status = order_data.get('status','pending')
+        price_update_count = int(order_data.get('price_update_count', 0)) + 1
+
 
         # Check for sell trigger
         if new_price <= stoploss and not is_matched:
             print(f"Order {order_uuid} triggered for selling at price {new_price}")
+            r.hset(order_key, 'selling_price', str(new_price))
+
+            initial_price = float(order_data.get('market_price',0))
+            evaluate_result = "good" if new_price > initial_price else "bad"
+            print(f"Order {order_uuid} evaluated as {evaluate_result}")
+
             matched_data = {
                 'is_matched': 'True',
                 'market_price': str(new_price),
-                'timestamp': datetime.utcnow().isoformat() + 'Z'
+                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'price_update_count': price_update_count,
+                'selling_price': str(new_price),  
+                'evaluation_result': evaluate_result
+
             }
             r.hmset(f"order:{clean_order_uuid}", matched_data)
             r.hmset(f"order_last_state:{clean_order_uuid}", matched_data)
             r.hset(order_key,'status','matched')
+            r.hset(order_key, 'price_update_count', price_update_count)  # Save the count to Redis
             status = 'matched'
             r.sadd('orders:matched', clean_order_uuid)
             await sio.emit('sell_order_triggered', matched_data)
@@ -163,7 +144,8 @@ async def update_order_with_new_price(order_uuid, new_price):
                 'highest_price': highest_price,
                 'stoploss': stoploss,
                 'timestamp': new_timestamp_str,
-                'stopsize': stopsize
+                'stopsize': stopsize,
+                'price_update_count': price_update_count
             }
 
             r.hmset(order_key, updated_order_data)

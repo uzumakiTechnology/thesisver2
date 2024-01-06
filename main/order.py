@@ -12,16 +12,20 @@ r = redis.StrictRedis(host='127.0.0.1',port=6379)
 class Order:
     def __init__(self, user_id, market_price, quantity, stopsize, timestamp=None):
         self.user_id = user_id
+        self.initial_market_price = float(market_price) # price when order placed
         self.quantity = quantity
         self.stopsize = stopsize
         self.market_price = market_price
         self.highest_price = market_price  
+        self.selling_price = None
         self.stoploss = self.market_price - self.stopsize
         self.is_matched = False
         self.uuid = str(uuid.uuid4())
         self.timestamp = timestamp if timestamp else datetime.utcnow().isoformat()
         self.initial_data_saved = False
         self.status = 'pending'
+        self.price_update_count = 0 # counter for price updates
+        self.selling_price = None
         self.save_to_redis()
         print(f"New order created with ID: {self.uuid} at initial price: {self.market_price}")
     
@@ -29,14 +33,16 @@ class Order:
     def save_to_redis(self):
         order_data = {
             'user_id': str(self.user_id),
+            'initial_market_price': str(self.market_price),
             'market_price': str(self.market_price),
+            'highest_price': str(self.highest_price),
             'quantity': str(self.quantity),
             'stopsize': str(self.stopsize),
             'stoploss': str(self.stoploss),
-            'highest_price': str(self.highest_price),
             'timestamp': self.timestamp,
             'is_matched': str(self.is_matched),
-            'status': str(self.status)
+            'status': str(self.status),
+            'price_update_count': self.price_update_count
         }
 
         if not self.initial_data_saved:
@@ -52,6 +58,7 @@ class Order:
     async def update_order(self, new_price):
         if self.is_matched:
             return
+        self.price_update_count += 1
         current_stoploss = float(r.hget(f"order:{self.uuid}","stoploss"))
         highest_price = float(r.hget(f"order:{self.uuid}", "highest_price"))
 
@@ -64,7 +71,8 @@ class Order:
                     'is_matched': 'True',
                     'market_price': str(new_price),
                     'timestamp': datetime.utcnow().isoformat() + 'Z',
-                    'status': self.status
+                    'status': self.status,
+                    'price_update_count': str(self.price_update_count)
                 }
                 r.hmset(f"order:{self.uuid}", matched_data)
                 pipe.sadd('orders:matched', self.uuid)
@@ -99,5 +107,11 @@ class Order:
                 print(f"Order {self.uuid}: Market Price updated to {self.market_price}, new stoploss is {self.stoploss}")
                 pipe.execute()
 
+    def record_sell(self, selling_price):
+        r.hset(f"order:{self.uuid}", 'selling_price', str(selling_price))
 
+    def evaluate_order(self):
+        if self.selling_price is None:
+            return None
+        return "good" if self.selling_price > self.initial_market_price else "bad"
 

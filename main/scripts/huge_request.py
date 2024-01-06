@@ -45,7 +45,7 @@ start_time = datetime.now().replace(hour=1, minute=30, second=0, microsecond=0)
 end_time = datetime.now().replace(hour=3, minute=0, second=0, microsecond=0)
 
 start_time_for_measurement = datetime.now()
-create_sample_orders(1000, start_time, end_time) # Gen 10000 orders
+create_sample_orders(1000, start_time, end_time) # Gen 1000 orders
 end_time_for_measurement = datetime.now()
 elapsed_time = end_time_for_measurement - start_time_for_measurement
 print(f"Time taken to create 10000 orders: {elapsed_time}")

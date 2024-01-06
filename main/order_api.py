@@ -112,25 +112,7 @@ async def login(uuid: str):
         return {"message": "User authenticated", "uuid": uuid}
     raise HTTPException(status_code=404, detail="User not found")
 
-@app.get("/user/{user_uuid}/orders")
-async def get_user_orders(user_uuid: str):
-    user_orders = []
-    # Iterate over all keys that match the order pattern
-    for key in r.scan_iter("order:*"):
-        # Extract the potential order UUID from the key
-        order_uuid = key.decode('utf-8').split(':')[1]
-        order_data = r.hgetall(key)
-        # Decode and check if the order belongs to the user
-        if order_data.get(b'user_id', '').decode('utf-8') == user_uuid:
-            # Include the order UUID in the response
-            order_data_decoded = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data.items()}
-            order_data_decoded['uuid'] = order_uuid
-            user_orders.append(order_data_decoded)
-    
-    if not user_orders:
-        raise HTTPException(status_code=404, detail="No orders found for this user")
 
-    return user_orders
 
 
 @app.get("/user/{user_uuid}/orders/stats")
@@ -158,6 +140,86 @@ async def get_user_order_stats(user_uuid: str):
         "unmatched_orders": unmatched_orders
     }
 
+
+
+@app.get("/user/{user_uuid}/orders")
+async def get_user_orders(user_uuid: str):
+    user_orders = []
+    # Iterate over all keys that match the order pattern
+    for key in r.scan_iter("order:*"):
+        # Extract the potential order UUID from the key
+        order_uuid = key.decode('utf-8').split(':')[1]
+        order_data = r.hgetall(key)
+        # Decode and check if the order belongs to the user
+        if order_data.get(b'user_id', '').decode('utf-8') == user_uuid:
+            # Include the order UUID in the response
+            order_data_decoded = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data.items()}
+            order_data_decoded['uuid'] = order_uuid
+            user_orders.append(order_data_decoded)
+    
+    if not user_orders:
+        raise HTTPException(status_code=404, detail="No orders found for this user")
+
+    return user_orders
+
+# Endpoint to fetch new price count
+@app.get('/orders/{uuid}/count_new_price_come', status_code=200)
+async def get_price_update_count(uuid: str):
+    price_update_count = r.hget(f'order:{uuid}', 'price_update_count')
+    if price_update_count is None:
+        raise HTTPException(status_code=404, detail="Order not found or price update count not available")
+
+    # Decode the count value
+    price_update_count_decoded = price_update_count.decode('utf-8')
+
+    # Return only the price update count
+    return {"price_update_count": price_update_count_decoded}
+
+@app.get('/orders/{uuid}/evaluation', status_code=200)
+async def get_order_evaluation(uuid: str):
+    order_data = r.hgetall(f'order:{uuid}')
+    initial_price = r.hget(f'order:{uuid}', 'initial_market_price')
+    selling_price = r.hget(f'order:{uuid}', 'selling_price')
+    evaluate_result = r.hget(f'order:{uuid}', 'evaluation_result')
+    if not initial_price and selling_price and evaluate_result:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    initial_price_decoded = initial_price.decode('utf-8')
+    selling_price_decoded = selling_price.decode('utf-8')
+    evaluate_result_decoded = evaluate_result.decode('utf-8')
+
+    if evaluate_result_decoded == 'good':
+        explanation = f'This order is considered good because it was sold at ${selling_price_decoded}, ' \
+                      f'which is higher than the initial price of ${initial_price_decoded}, indicating a profit.'
+    elif evaluate_result_decoded == 'bad':
+        explanation = f'This order is considered bad because it was sold at ${selling_price_decoded}, ' \
+                      f'which is not higher than the initial price of ${initial_price_decoded}, indicating no profit or a loss.'
+    else:
+        explanation = 'Evaluation result not available.'
+
+    return {"evaluation_result": evaluate_result_decoded, "explanation": explanation}
+
+
+@app.get("/admin/order-stats")
+async def get_order_stats():
+    all_order_keys = r.keys("order:*")
+    total_orders = len(all_order_keys)
+    ended_orders = 0
+
+    for key in all_order_keys:
+        order_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in r.hgetall(key).items()}
+
+        if order_data.get('is_matched') == 'True':
+            print(f"Ended order found: {key}")  # Debugging print statement
+            ended_orders += 1
+
+    ongoing_orders = total_orders - ended_orders
+
+    return {
+        "total_orders": total_orders,
+        "ended_orders": ended_orders,
+        "ongoing_orders": ongoing_orders
+    }
 
 
 

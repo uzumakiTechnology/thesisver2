@@ -7,7 +7,7 @@ producer = KafkaProducer(bootstrap_servers="localhost:9092", value_serializer=la
 
 def producer_prices():
     # new_price = get_new_market_price()
-    new_prices = [80]
+    new_prices = [90, 100, 105, 90]
     for new_price in new_prices:
         producer.send('new_price',{'price': new_price})
         producer.flush()

@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import FastAPI, Form, HTTPException, WebSocket, WebSocketDisconnect
 from order import Order
 from pydantic import BaseModel
@@ -8,8 +9,15 @@ import socketio
 import uvicorn
 from typing import Optional
 import json
-
-
+from orderWithoutPipeline import orderWithoutPipeline
+import random
+import time
+import kafka_consumer
+import kafka_consumerWOPipeline
+import kafka_producer
+import asyncio
+from kafka_producer import producer
+from kafka import KafkaProducer
 
 r = redis.StrictRedis(host='localhost',port=6379)
 app = FastAPI()
@@ -25,6 +33,7 @@ app.add_middleware(
 # Socket io instance
 sio = socketio.AsyncServer(async_mode='asgi',cors_allowed_origins='*')
 socketio_app = socketio.ASGIApp(sio, app)
+producer = KafkaProducer(bootstrap_servers="localhost:9092", value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
 
 # Define a Pydantic model for the Order(data) request
@@ -35,6 +44,13 @@ class OrderRequest(BaseModel):
     stopsize: float
     timestamp: Optional[str] = None
     
+# For bulk order created    
+class GenerateOrdersRequest(BaseModel):
+    number_of_orders: int
+    use_pipeline: bool
+
+class PriceModel(BaseModel):
+    price: int
 
 # Socket.IO connection events
 @sio.event
@@ -45,7 +61,16 @@ async def connect(sid, environ):
 async def disconnect(sid):
     print('Client disconnected', sid)
 
-# Endpoints to accept and process order
+@app.post('/orderWithoutPipeline')
+async def create_and_process_order_without_pipeline(order_request: OrderRequest, background_tasks: BackgroundTasks):
+    def process_order_creation(order_request):
+        orderWithoutPipelines = orderWithoutPipeline(order_request.user_id,order_request.market_price, order_request.quantity, order_request.stopsize, order_request.timestamp)
+        return orderWithoutPipelines
+    background_tasks.add_task(process_order_creation, order_request)
+    return {"message": "Order creation for without pipeline version received and is being processed"}
+
+
+# Endpoints to accept and process order (version with pipeline)
 @app.post('/orders/')
 async def create_and_process_order(order_request: OrderRequest, background_tasks: BackgroundTasks):
     def process_order_creation(order_request):
@@ -53,6 +78,7 @@ async def create_and_process_order(order_request: OrderRequest, background_tasks
         return order
     background_tasks.add_task(process_order_creation, order_request)
     return {"message": "Order received and is being processed"}
+
 
 
 
@@ -66,11 +92,14 @@ def get_order_by_uuid(uuid: str):
 
 @app.get('/orders/{uuid}/history')
 def get_order_history(uuid: str):
-    order_history_data = r.lrange(f'order_history:{uuid}', 0, -1)
+    order_history_key = f'order_history:{uuid}'
+    order_history_data = r.lrange(order_history_key, 0, -1)
     if not order_history_data:
+        print(f"No history found for order: {uuid}")  # Debug print
         raise HTTPException(status_code=404, detail="Order history not found")
     order_history = [json.loads(data) for data in order_history_data]
     return order_history
+
 
 @app.get('/orders/{uuid}/initial')
 def get_initial_order_data(uuid: str):
@@ -221,6 +250,53 @@ async def get_order_stats():
         "ongoing_orders": ongoing_orders
     }
 
+@app.post('/generate_orders/')
+async def generate_orders(request: GenerateOrdersRequest, background_tasks: BackgroundTasks):
+    """Endpoint to generate a specified number of orders."""
+    def generate_orders_task():
+        start_time = time.time()  # Time in seconds since the epoch
+        for _ in range(request.number_of_orders):
+            market_price = random.uniform(75, 85)  # Example random market price
+            quantity = random.randint(1, 10)
+            stopsize = random.uniform(5, 10)
+            timestamp = datetime.utcnow().isoformat() + 'Z'
+            if request.use_pipeline:
+                Order(None, market_price, quantity, stopsize, timestamp)
+            else:
+                orderWithoutPipeline(None, market_price, quantity, stopsize, timestamp)
+        end_time = time.time()
+        total_time = end_time - start_time  
+        print(f"Time taken to generate {request.number_of_orders} orders: {total_time} seconds")
+
+    background_tasks.add_task(generate_orders_task)
+    return {"message": "Orders generation task started"}
+
+
+@app.post("/start-consumer/")
+async def start_consumer(background_tasks: BackgroundTasks, use_pipeline: bool):
+    if use_pipeline:
+        background_tasks.add_task(start_kafka_consumer)
+    else:
+        background_tasks.add_task(start_kafka_consumer_without_pipeline)
+    return {"message": "Consumer started"}
+
+
+def start_kafka_consumer():
+    asyncio.run(kafka_consumer.main())
+
+def start_kafka_consumer_without_pipeline():
+    asyncio.run(kafka_consumerWOPipeline.main())
+
+@app.post("/produce-prices/")
+async def produce_prices():
+    kafka_producer.producer_prices()
+    return {"message": "Prices produced"}
+
+@app.post("/produce-priceV2/")
+async def produce_price(price_data: PriceModel):
+    producer.send('new_price',{'price':price_data.price})
+    producer.flush()
+    return {"message": "Price produced to Kafka topic"}
 
 
 if __name__ == "__main__":

@@ -27,7 +27,6 @@ class Order:
         self.price_update_count = 0 # counter for price updates
         self.selling_price = None
         self.save_to_redis()
-        print(f"New order created with ID: {self.uuid} at initial price: {self.market_price}")
     
         
     def save_to_redis(self):
@@ -44,16 +43,16 @@ class Order:
             'status': str(self.status),
             'price_update_count': self.price_update_count
         }
+        with r.pipeline() as pipe:
+            if not self.initial_data_saved:
+                initial_data_key = f"order_initial:{self.uuid}"
+                pipe.hmset(initial_data_key, order_data)
+                self.initial_data_saved = True
 
-        if not self.initial_data_saved:
-            initial_data_key = f"order_initial:{self.uuid}"
-            r.hmset(initial_data_key, order_data)
-            self.initial_data_saved = True
-
-        order_data_serialized = json.dumps(order_data)
-        r.hmset(f"order:{self.uuid}", order_data)
-        r.lpush(f"order_history:{self.uuid}", order_data_serialized)
-
+            order_data_serialized = json.dumps(order_data)
+            pipe.hmset(f"order:{self.uuid}", order_data)
+            pipe.lpush(f"order_history:{self.uuid}", order_data_serialized)
+            pipe.execute()
 
     async def update_order(self, new_price):
         if self.is_matched:
@@ -74,8 +73,9 @@ class Order:
                     'status': self.status,
                     'price_update_count': str(self.price_update_count)
                 }
-                r.hmset(f"order:{self.uuid}", matched_data)
+                pipe.hmset(f"order:{self.uuid}", matched_data)
                 pipe.sadd('orders:matched', self.uuid)
+                pipe.lpush(f"order_history:{self.uuid}", json.dumps(matched_data))
                 pipe.publish('orders:executed', self.uuid)
 
                 global sio
@@ -102,9 +102,8 @@ class Order:
                     'timestamp': datetime.utcnow().isoformat() + 'Z',
                     'status': self.status
                 }
-                r.hmset(f"order:{self.uuid}", updated_data)
-                r.lpush(f"order_history:{self.uuid}", json.dumps(updated_data))
-                print(f"Order {self.uuid}: Market Price updated to {self.market_price}, new stoploss is {self.stoploss}")
+                pipe.hmset(f"order:{self.uuid}", updated_data)
+                pipe.lpush(f"order_history:{self.uuid}", json.dumps(updated_data))
                 pipe.execute()
 
     def record_sell(self, selling_price):

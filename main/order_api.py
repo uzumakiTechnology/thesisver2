@@ -90,6 +90,16 @@ def get_order_by_uuid(uuid: str):
         raise HTTPException(status_code=404, detail="Order not found")
     return order_data
 
+@app.get('/orders/{uuid}/chart_data')
+def get_order_data(uuid: str):
+    order_data_key = f'chart_data:{uuid}'
+    order_chart_data_key = r.lrange(order_data_key, 0, -1)
+    if not order_data_key:
+        print(f"No chart data found for order: {uuid}")  # Debug print
+        raise HTTPException(status_code=404, detail="Order history not found")
+    order_chart = [json.loads(data) for data in order_chart_data_key]
+    return order_chart
+
 @app.get('/orders/{uuid}/history')
 def get_order_history(uuid: str):
     order_history_key = f'order_history:{uuid}'
@@ -99,6 +109,7 @@ def get_order_history(uuid: str):
         raise HTTPException(status_code=404, detail="Order history not found")
     order_history = [json.loads(data) for data in order_history_data]
     return order_history
+
 
 
 @app.get('/orders/{uuid}/initial')

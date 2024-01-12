@@ -72,6 +72,7 @@ class orderWithoutPipeline:
             }
             r.hmset(f"order:{self.uuid}", matched_data)
             r.sadd('orders:matched', self.uuid)
+            r.lpush(f"order_history:{self.uuid}", json.dumps(matched_data))  
             r.publish('orders:executed', self.uuid)
             
             global sio

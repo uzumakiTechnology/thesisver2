@@ -1,25 +1,21 @@
-# poll price back
-# Responsible for fetching new price, information and updating each relevant order
 from kafka import KafkaConsumer
 import redis
-from order import Order
 import json
 import socketio
 import asyncio
 from datetime import datetime, timedelta
 import pytz
-from orderWithoutPipeline import orderWithoutPipeline
+import uuid
+
 
 vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
-# Set up a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 app = socketio.ASGIApp(sio)
 
 
 socket_app = socketio.ASGIApp(sio, app)
 
-# Socket.IO events
 @sio.event
 async def connect(sid, environ):
     print('Client connected', sid)
@@ -86,80 +82,68 @@ async def update_order_with_new_price(order_uuid, new_price):
     clean_order_uuid = order_uuid.split(":")[1]
     order_key = f"order:{clean_order_uuid}"
     order_history_key = f"order_history:{clean_order_uuid}"
+    chart_data_key = f"chart_data:{clean_order_uuid}"  # New key for chart data
 
-    # Start a Redis pipeline
+    # Fetch order data and the latest history entry
     pipe = r.pipeline()
     pipe.hgetall(order_key)
-    order_data_result = pipe.execute()
+    pipe.lrange(order_history_key, 0, 0)
+    order_data_result, last_history_entries = pipe.execute()
 
-    if order_data_result[0]:
-        order_data = order_data_result[0]
-        order_data = {k.decode('utf-8'): float(v.decode('utf-8')) if k.decode('utf-8') in ['market_price', 'highest_price', 'stopsize', 'stoploss'] else v.decode('utf-8') for k, v in order_data.items()}
-        highest_price = order_data.get('highest_price')
-        stopsize = order_data.get('stopsize')
-        stoploss = order_data.get('stoploss')
-        is_matched = order_data.get('is_matched') == 'True'
-        status = order_data.get('status','pending')
-        price_update_count = int(order_data.get('price_update_count', 0)) + 1
-
-        if new_price <= stoploss and not is_matched:
-            pipe.hset(order_key, 'selling_price', str(new_price))
-            initial_price = float(order_data.get('market_price',0))
-            evaluate_result = "good" if new_price > initial_price else "bad"            
-            matched_data = {
-                'is_matched': 'True',
-                'market_price': str(new_price),
-                'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'price_update_count': price_update_count,
-                'selling_price': str(new_price),  
-                'evaluation_result': evaluate_result
-            }
-            pipe.hmset(f"order:{clean_order_uuid}", matched_data)
-            pipe.hmset(f"order_last_state:{clean_order_uuid}", matched_data)
-            pipe.hmset(order_key, matched_data)
-            # pipe.lpush(order_history_key, json.dumps(matched_data))
-            pipe.hset(order_key,'status','matched')
-            pipe.hset(order_key, 'price_update_count', price_update_count)  # Save the count to Redis
-            status = 'matched'
-            pipe.sadd('orders:matched', clean_order_uuid)
-            await sio.emit('sell_order_triggered', matched_data)
-            return
-        
-        update_required = False
-        if new_price > highest_price and not is_matched:
-            highest_price = new_price
-            stoploss = new_price - stopsize
-            update_required = True
-
-        if new_price != order_data['market_price']:
-            update_required = True
-
-            if update_required:
-                existing_timestamp = parse_datetime_with_fallback(order_data['timestamp'])
-                if existing_timestamp is None:
-                    print(f"Failed to parse timestamp for order {order_uuid}. Skipping update.")
-                    return
-                existing_timestamp_vn = existing_timestamp.astimezone(vietnam_tz)
-                new_timestamp = existing_timestamp_vn + timedelta(minutes=30)
-                new_timestamp_str = new_timestamp.astimezone(pytz.utc).isoformat().replace('+00:00', 'Z')
-                updated_order_data = {
-                    'market_price': new_price,
-                    'highest_price': highest_price,
-                    'stoploss': stoploss,
-                    'timestamp': new_timestamp_str,
-                    'stopsize': stopsize,
-                    'price_update_count': price_update_count
-                }
-                pipe.hmset(order_key, updated_order_data)
-                # pipe.lpush(order_history_key, json.dumps(updated_order_data))
-                if status != 'matched':
-                    pipe.hset(order_key, 'status', 'updated')
-                print(f"Emitting price_update for order {order_uuid} with data: {updated_order_data}")
-                await sio.emit('order_update', {'order_uuid': clean_order_uuid, 'data': updated_order_data})
-        pipe.execute()
-    else:
+    if not order_data_result:
         print(f"No order found for UUID: {clean_order_uuid}")
-         
+        return
+
+    # Parse and prepare new data
+    order_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data_result.items()}
+    highest_price = float(order_data.get('highest_price', 0))
+    stoploss = float(order_data.get('stoploss', 0))
+    stopsize = float(order_data.get('stopsize', 0))
+    last_update_time = datetime.strptime(order_data.get('timestamp'), "%Y-%m-%dT%H:%M:%S.%fZ")
+    is_matched_already = order_data.get('is_matched') == 'True'
+
+
+    is_matched = order_data.get('is_matched') == 'True'
+    price_update_count = int(order_data.get('price_update_count', 0)) + 1
+    existing_selling_price = order_data.get('selling_price')
+
+    if not existing_selling_price and new_price <= stoploss:
+        selling_price = str(new_price)
+        status = 'matched'
+        is_matched = 'True'
+    else:
+        selling_price = existing_selling_price
+        status = 'updated' if not is_matched_already else 'matched'
+        is_matched = 'True' if is_matched_already else 'False'
+
+    new_timestamp = (last_update_time + timedelta(minutes=30)).isoformat() + 'Z'
+
+    new_data = {
+        'market_price': str(new_price),
+        'highest_price': str(max(new_price, highest_price)),
+        'stoploss': str(max(new_price - stopsize, stoploss)),  # Ensure stoploss doesn't increase with price
+        'timestamp': new_timestamp,
+        'status': status,
+        'selling_price': selling_price if selling_price is not None else '',
+        'price_update_count': price_update_count,
+        'stopsize': str(stopsize),
+        'is_matched': is_matched
+    }
+
+    json_new_data = json.dumps(new_data)
+
+    if not last_history_entries or (last_history_entries and last_history_entries[0].decode('utf-8') != json_new_data):
+        try:
+            pipe.hset(order_key, mapping=new_data)
+            pipe.lpush(order_history_key, json_new_data)
+            pipe.lpush(chart_data_key, json_new_data)  # Add to chart data list
+            if new_price <= stoploss and not is_matched_already:
+                pipe.sadd('orders:matched', clean_order_uuid)
+                await sio.emit('sell_order_triggered', new_data)
+            pipe.execute()
+        except Exception as e:
+            print(f"Redis pipeline execution error: {e}")
+
 
 async def main():
     asyncio.create_task(listen_for_price_updates())
@@ -167,3 +151,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+

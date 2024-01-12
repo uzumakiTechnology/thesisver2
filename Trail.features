@@ -32,29 +32,9 @@ FastAPI Server: Running and able to accept requests for order creation.
 
 
 
-  // useEffect(() => {
-  //   const fetchOrderData = async () => {
-  //     const response = await fetch(`http://127.0.0.1:8000/orders/${uuid}`);
-  //     if (!response.ok) {
-  //       throw new Error("Network response was not ok");
-  //     }
-  //     const newData = await response.json();
-  //     setOrderData((currentData) => [...currentData, newData]);
-  //   };
-
-  //   fetchOrderData().catch(console.error);
-  // }, [uuid]);
-
-
-
-
-
-
-
-
-  // {
-//     "market_price": 80,
-//     "quantity": 100,
-//     "stoploss": 10,
-//    "timestamp": "2023-12-19T11:59:20.992Z" 
-//    }
+beside that, I also need your help with status and is_matched value, with our current
+code, although sell order is triggered, and status is matched, what I want is
+that value will stay constant, but when market price rise again, that status
+value changed to updated again, next, i also wanna fetch is_matched value
+when sell order triggered, it will be set to True and it will constantly remain
+at that value

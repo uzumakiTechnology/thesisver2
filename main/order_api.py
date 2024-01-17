@@ -12,7 +12,7 @@ import json
 from orderWithoutPipeline import orderWithoutPipeline
 import random
 import time
-import kafka_consumer
+from kafka_consumer import kafka_consumer
 import kafka_consumerWOPipeline
 import kafka_producer
 import asyncio
@@ -47,7 +47,7 @@ class OrderRequest(BaseModel):
 # For bulk order created    
 class GenerateOrdersRequest(BaseModel):
     number_of_orders: int
-    use_pipeline: bool
+    # use_pipeline: bool
 
 class PriceModel(BaseModel):
     price: int
@@ -140,9 +140,19 @@ async def get_order_status(uuid: str):
     print(f"Order data for {uuid}: {order_data}")
 
     is_matched = order_data.get('is_matched', 'False') == 'True'
-    market_price = order_data.get('market_price', '0')
+    selling_price = order_data.get('selling_price', '0')
 
-    return {"is_matched": is_matched, "market_price": market_price}
+    return {"is_matched": is_matched, "selling_price": selling_price}
+
+@app.get("/orders/{uuid}/percent_change")
+async def get_order_percent_change(uuid:str):
+    order_data = r.hgetall(f"order:{uuid}")
+    if not order_data:
+        raise HTTPException(status_code=404, detail="Order not found")
+    order_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data.items()}
+    percent_change = order_data.get('percentage_change', '0') 
+    return {"percentage_change": percent_change}
+
 
 
 
@@ -218,26 +228,32 @@ async def get_price_update_count(uuid: str):
 @app.get('/orders/{uuid}/evaluation', status_code=200)
 async def get_order_evaluation(uuid: str):
     order_data = r.hgetall(f'order:{uuid}')
-    initial_price = r.hget(f'order:{uuid}', 'initial_market_price')
-    selling_price = r.hget(f'order:{uuid}', 'selling_price')
-    evaluate_result = r.hget(f'order:{uuid}', 'evaluation_result')
-    if not initial_price and selling_price and evaluate_result:
+    if not order_data:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    initial_price_decoded = initial_price.decode('utf-8')
-    selling_price_decoded = selling_price.decode('utf-8')
-    evaluate_result_decoded = evaluate_result.decode('utf-8')
+    # Decode Redis bytes response to string
+    order_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data.items()}
+    
+    initial_price = float(order_data.get('initial_market_price', '0'))
+    selling_price = float(order_data.get('selling_price', '0'))
+    evaluate_result = order_data.get('evaluation_result', None)
 
-    if evaluate_result_decoded == 'good':
-        explanation = f'This order is considered good because it was sold at ${selling_price_decoded}, ' \
-                      f'which is higher than the initial price of ${initial_price_decoded}, indicating a profit.'
-    elif evaluate_result_decoded == 'bad':
-        explanation = f'This order is considered bad because it was sold at ${selling_price_decoded}, ' \
-                      f'which is not higher than the initial price of ${initial_price_decoded}, indicating no profit or a loss.'
+    if evaluate_result is None and 'selling_price' in order_data:
+        # Perform evaluation if not done already
+        evaluate_result = "good" if selling_price > initial_price else "bad"
+        # Update the Redis data with the new evaluation result
+        r.hset(f'order:{uuid}', 'evaluation_result', evaluate_result)
+
+    if evaluate_result == 'good':
+        explanation = f'This order is considered good because it was sold at ${selling_price}, ' \
+                      f'which is higher than the initial price of ${initial_price}, indicating a profit.'
+    elif evaluate_result == 'bad':
+        explanation = f'This order is considered bad because it was sold at ${selling_price}, ' \
+                      f'which is not higher than the initial price of ${initial_price}, indicating no profit or a loss.'
     else:
         explanation = 'Evaluation result not available.'
 
-    return {"evaluation_result": evaluate_result_decoded, "explanation": explanation}
+    return {"evaluation_result": evaluate_result, "explanation": explanation}
 
 
 @app.get("/admin/order-stats")
@@ -264,20 +280,25 @@ async def get_order_stats():
 @app.post('/generate_orders/')
 async def generate_orders(request: GenerateOrdersRequest, background_tasks: BackgroundTasks):
     """Endpoint to generate a specified number of orders."""
-    def generate_orders_task():
-        start_time = time.time()  # Time in seconds since the epoch
+
+    async def create_order_async(user_id, market_price, quantity, stopsize, timestamp):
+        return Order(user_id, market_price, quantity, stopsize, timestamp)
+
+    async def generate_orders_task():
+        tasks = []
         for _ in range(request.number_of_orders):
-            market_price = random.uniform(75, 85)  # Example random market price
+            market_price = random.uniform(75, 85)
             quantity = random.randint(1, 10)
             stopsize = random.uniform(5, 10)
             timestamp = datetime.utcnow().isoformat() + 'Z'
-            if request.use_pipeline:
-                Order(None, market_price, quantity, stopsize, timestamp)
-            else:
-                orderWithoutPipeline(None, market_price, quantity, stopsize, timestamp)
-        end_time = time.time()
-        total_time = end_time - start_time  
-        print(f"Time taken to generate {request.number_of_orders} orders: {total_time} seconds")
+            task = create_order_async(None, market_price, quantity, stopsize, timestamp)
+            tasks.append(task)
+
+        orders = await asyncio.gather(*tasks)  # Collect all orders
+        Order.save_orders_batch(orders)  # Save all orders in a batch
+
+        # Timing and logging
+        print(f"Generated {request.number_of_orders} orders")
 
     background_tasks.add_task(generate_orders_task)
     return {"message": "Orders generation task started"}

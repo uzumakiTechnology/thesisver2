@@ -18,3 +18,6 @@ LRANGE order_history:ab83d806-b08e-4904-b726-1e5e31f3f7ae 0 -1
 f you want to fetch a specific version (e.g., the third version since the order was created), you can use the index when calling lrange
 LINDEX order_history:ab83d806-b08e-4904-b726-1e5e31f3f7ae 2
 
+delete keys in redis (key order)
+EVAL "for _,key in ipairs(redis.call('keys', 'order:*')) do redis.call('del', key) end" 0
+EVAL "for _,key in ipairs(redis.call('keys', 'order_history:*')) do redis.call('del', key) end" 0

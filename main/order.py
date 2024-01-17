@@ -5,6 +5,7 @@ import json
 from fastapi import WebSocket
 import socketio
 import logging
+import asyncio
 
 r = redis.StrictRedis(host='127.0.0.1',port=6379)
 
@@ -26,11 +27,55 @@ class Order:
         self.status = 'pending'
         self.price_update_count = 0 
         self.selling_price = None
-        self.save_to_redis()
+        # self.save_to_redis()
     
         
-    def save_to_redis(self):
-        order_data = {
+    # def save_to_redis(self):
+    #     order_data = {
+    #         'user_id': str(self.user_id),
+    #         'initial_market_price': str(self.market_price),
+    #         'market_price': str(self.market_price),
+    #         'highest_price': str(self.highest_price),
+    #         'quantity': str(self.quantity),
+    #         'stopsize': str(self.stopsize),
+    #         'stoploss': str(self.stoploss),
+    #         'timestamp': self.timestamp,
+    #         'is_matched': str(self.is_matched),
+    #         'status': str(self.status),
+    #         'price_update_count': self.price_update_count
+    #     }
+    #     with r.pipeline() as pipe:
+    #         if not self.initial_data_saved:
+    #             initial_data_key = f"order_initial:{self.uuid}"
+    #             pipe.hmset(initial_data_key, order_data)
+    #             self.initial_data_saved = True
+
+    #         order_data_serialized = json.dumps(order_data)
+    #         pipe.hmset(f"order:{self.uuid}", order_data)
+    #         pipe.lpush(f"order_history:{self.uuid}", order_data_serialized)
+    #         pipe.execute()
+        
+
+    @classmethod
+    def save_orders_batch(cls, orders):
+        with r.pipeline() as pipe:
+            for order in orders:
+                order_data = order._prepare_order_data()
+                initial_data_key = f"order_initial:{order.uuid}"
+                current_data_key = f"order:{order.uuid}"
+                order_data_serialized = json.dumps(order_data)
+
+                if not order.initial_data_saved:
+                    pipe.hmset(initial_data_key, order_data)
+                    order.initial_data_saved = True
+
+                pipe.hmset(current_data_key, order_data)
+                pipe.lpush(f"order_history:{order.uuid}", order_data_serialized)
+
+            pipe.execute()
+
+    def _prepare_order_data(self):
+        return {
             'user_id': str(self.user_id),
             'initial_market_price': str(self.market_price),
             'market_price': str(self.market_price),
@@ -43,17 +88,6 @@ class Order:
             'status': str(self.status),
             'price_update_count': self.price_update_count
         }
-        with r.pipeline() as pipe:
-            if not self.initial_data_saved:
-                initial_data_key = f"order_initial:{self.uuid}"
-                pipe.hmset(initial_data_key, order_data)
-                self.initial_data_saved = True
-
-            order_data_serialized = json.dumps(order_data)
-            pipe.hmset(f"order:{self.uuid}", order_data)
-            pipe.lpush(f"order_history:{self.uuid}", order_data_serialized)
-            pipe.execute()
-
 
 
     async def update_order(self, new_price):
@@ -87,8 +121,6 @@ class Order:
                 self.highest_price = new_price
                 self.stoploss = new_stop_loss
                 self.status = 'updated'
-
-
 
     def evaluate_order(self):
         if self.selling_price is None:

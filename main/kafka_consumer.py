@@ -8,6 +8,7 @@ import pytz
 import uuid
 
 
+
 vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -61,7 +62,12 @@ async def listen_for_price_updates():
     # Kafka consumer listen for price updates
     for message in consumer:
         new_price = message.value['price']
-        await process_new_price(new_price)    
+        await process_new_price(new_price)  
+
+def calculate_percentage_change(initial_price, selling_price):
+    if initial_price == 0:
+        return 0
+    return ((selling_price - initial_price) / initial_price) * 100
 
     
 async def process_new_price(new_price):
@@ -82,9 +88,8 @@ async def update_order_with_new_price(order_uuid, new_price):
     clean_order_uuid = order_uuid.split(":")[1]
     order_key = f"order:{clean_order_uuid}"
     order_history_key = f"order_history:{clean_order_uuid}"
-    chart_data_key = f"chart_data:{clean_order_uuid}"  # New key for chart data
+    chart_data_key = f"chart_data:{clean_order_uuid}"
 
-    # Fetch order data and the latest history entry
     pipe = r.pipeline()
     pipe.hgetall(order_key)
     pipe.lrange(order_history_key, 0, 0)
@@ -94,40 +99,48 @@ async def update_order_with_new_price(order_uuid, new_price):
         print(f"No order found for UUID: {clean_order_uuid}")
         return
 
-    # Parse and prepare new data
     order_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in order_data_result.items()}
     highest_price = float(order_data.get('highest_price', 0))
     stoploss = float(order_data.get('stoploss', 0))
     stopsize = float(order_data.get('stopsize', 0))
-    last_update_time = datetime.strptime(order_data.get('timestamp'), "%Y-%m-%dT%H:%M:%S.%fZ")
+    initial_market_price = float(order_data.get('initial_market_price', 0))
     is_matched_already = order_data.get('is_matched') == 'True'
+    is_matched = 'False' 
+    last_update_time = datetime.strptime(order_data.get('timestamp'), "%Y-%m-%dT%H:%M:%S.%fZ")
+    percentage_change = None
 
+    price_update_count = int(order_data.get('price_update_count', 0))
+    if not is_matched_already:
+        price_update_count += 1
 
-    is_matched = order_data.get('is_matched') == 'True'
-    price_update_count = int(order_data.get('price_update_count', 0)) + 1
-    existing_selling_price = order_data.get('selling_price')
+    new_timestamp = (last_update_time + timedelta(minutes=30)).isoformat() + 'Z'
+    status = 'updated'
+    selling_price = order_data.get('selling_price', '')
+    evaluation_result = order_data.get('evaluation_result', 'not_evaluated')
 
-    if not existing_selling_price and new_price <= stoploss:
+    if not is_matched_already and new_price <= stoploss:
         selling_price = str(new_price)
         status = 'matched'
         is_matched = 'True'
-    else:
-        selling_price = existing_selling_price
-        status = 'updated' if not is_matched_already else 'matched'
-        is_matched = 'True' if is_matched_already else 'False'
-
-    new_timestamp = (last_update_time + timedelta(minutes=30)).isoformat() + 'Z'
+        percentage_change =  calculate_percentage_change(initial_market_price, new_price)  
+        evaluation_result = "good" if new_price > initial_market_price else "bad"
+    elif is_matched_already:
+        is_matched = 'True'
+        status = 'matched'
+        percentage_change = order_data.get('percentage_change', None)
 
     new_data = {
         'market_price': str(new_price),
         'highest_price': str(max(new_price, highest_price)),
-        'stoploss': str(max(new_price - stopsize, stoploss)),  # Ensure stoploss doesn't increase with price
+        'stoploss': str(max(new_price - stopsize, stoploss)),
         'timestamp': new_timestamp,
         'status': status,
-        'selling_price': selling_price if selling_price is not None else '',
+        'selling_price': selling_price,
         'price_update_count': price_update_count,
         'stopsize': str(stopsize),
-        'is_matched': is_matched
+        'is_matched': is_matched,
+        'evaluation_result': evaluation_result,
+        'percentage_change': str(percentage_change)
     }
 
     json_new_data = json.dumps(new_data)
@@ -136,8 +149,8 @@ async def update_order_with_new_price(order_uuid, new_price):
         try:
             pipe.hset(order_key, mapping=new_data)
             pipe.lpush(order_history_key, json_new_data)
-            pipe.lpush(chart_data_key, json_new_data)  # Add to chart data list
-            if new_price <= stoploss and not is_matched_already:
+            pipe.lpush(chart_data_key, json_new_data)
+            if status == 'matched':
                 pipe.sadd('orders:matched', clean_order_uuid)
                 await sio.emit('sell_order_triggered', new_data)
             pipe.execute()

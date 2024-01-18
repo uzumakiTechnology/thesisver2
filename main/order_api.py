@@ -12,7 +12,7 @@ import json
 from orderWithoutPipeline import orderWithoutPipeline
 import random
 import time
-from kafka_consumer import kafka_consumer
+import kafka_consumer
 import kafka_consumerWOPipeline
 import kafka_producer
 import asyncio
@@ -285,6 +285,8 @@ async def generate_orders(request: GenerateOrdersRequest, background_tasks: Back
         return Order(user_id, market_price, quantity, stopsize, timestamp)
 
     async def generate_orders_task():
+        start_time = time.time()  # Record start time
+
         tasks = []
         for _ in range(request.number_of_orders):
             market_price = random.uniform(75, 85)
@@ -297,8 +299,10 @@ async def generate_orders(request: GenerateOrdersRequest, background_tasks: Back
         orders = await asyncio.gather(*tasks)  # Collect all orders
         Order.save_orders_batch(orders)  # Save all orders in a batch
 
-        # Timing and logging
-        print(f"Generated {request.number_of_orders} orders")
+        end_time = time.time()  # Record end time
+        total_time = end_time - start_time  # Calculate total time taken
+
+        print(f"Generated and saved {request.number_of_orders} orders in {total_time:.2f} seconds")
 
     background_tasks.add_task(generate_orders_task)
     return {"message": "Orders generation task started"}

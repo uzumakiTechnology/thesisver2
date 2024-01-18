@@ -63,7 +63,7 @@ consumer = KafkaConsumer(
 
 
 async def listen_for_price_updates():
-    print("Consumer started. Listening for price updates...")
+    print("Batching Consumer started. Listening for price updates...")
     try:
         for message in consumer:
             try:
@@ -91,14 +91,26 @@ async def process_new_price(new_price):
     if not all_order_uuids:
         print("No orders found.")  # Debug print
         return
+    
+    batch = []
+    for order_uuid in all_order_uuids:
+        batch.append(order_uuid.decode('utf-8'))
+        if len(batch) >= BATCH_SIZE:
+            await process_batch(batch, new_price)
+            batch = [] # reset batch
+        
+    if batch:
+        await process_batch(batch, new_price)
 
-    update_tasks = [update_order_with_new_price(uuid.decode('utf-8'), new_price) for uuid in all_order_uuids]
+
+async def process_batch(batch, new_price):
+    start_time = datetime.now()
+    # Process all updates in the batch
+    
+    update_tasks = [update_order_with_new_price(order_uuid, new_price) for order_uuid in batch]
     await asyncio.gather(*update_tasks)
-
     end_time = datetime.now()
-    elapsed_time = end_time - start_time
-    print(f"Time taken to update orders: {elapsed_time}")
-
+    print(f"Time taken to update batch of orders: {end_time - start_time}")
 
 
 async def update_order_with_new_price(order_uuid, new_price):

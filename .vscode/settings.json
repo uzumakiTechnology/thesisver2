@@ -1,5 +1,6 @@
 {
     "python.analysis.extraPaths": [
-        "./main"
+        "./main",
+        "./main_streaming/hadoop/python"
     ]
 }
